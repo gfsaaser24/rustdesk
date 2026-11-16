@@ -1517,11 +1517,11 @@ fn on_cursor_plane(
     }
     c.measurements.push(m);
     let Some(accepted) = observe_measurement(c, m, seq, epoch) else {
-        log::debug!("drm: cursor hotspot for display {display}: measured {m:?} (sample {seq}), waiting for a second one");
+        log::debug!("drm: cursor hotspot for display {display}: measured {m:?} (sample {seq}), waiting for a second one [OMARCHY-TEST id={:x} {}x{} injected={injected:?} plane={p:?} n={}]", c.id, c.width, c.height, c.measurements.len());
         return;
     };
     if !agrees_with_most(&c.measurements, accepted) {
-        log::debug!("drm: cursor hotspot for display {display}: {accepted:?} is not what most samples measured, not confirming it");
+        log::debug!("drm: cursor hotspot for display {display}: {accepted:?} is not what most samples measured, not confirming it [OMARCHY-TEST id={:x} {}x{} history={:?}]", c.id, c.width, c.height, c.measurements);
         return;
     }
     apply_confirmed_hotspot(c, accepted, display, cursor_epoch);
