@@ -1240,6 +1240,8 @@ struct CursorCal {
     plane: Option<Pos>,
     stable_ticks: u32,
     measured_this_position: bool,
+    /// The latest measurements of this shape, so a pair can be checked against the rest.
+    measurements: Vec<Hotspot>,
 }
 
 /// Only a hotspot the producer guessed is measured; kernel truth is never overridden. A producer
@@ -1298,6 +1300,16 @@ fn usable_sample(
 
 fn near(a: Hotspot, b: Hotspot) -> bool {
     (a.0 - b.0).abs() <= CURSOR_CAL_TOLERANCE && (a.1 - b.1).abs() <= CURSOR_CAL_TOLERANCE
+}
+
+const CURSOR_CAL_HISTORY: usize = 16;
+
+/// Two agreeing measurements are not enough when the plane of one wire id keeps landing at
+/// several offsets from the injected tip (seen on Hyprland + amdgpu at scale 1.25): a pair from a
+/// minority offset would be confirmed and cached for the session. Most of what this shape
+/// measured must agree with the pair.
+fn agrees_with_most(measurements: &[Hotspot], accepted: Hotspot) -> bool {
+    measurements.iter().filter(|m| near(**m, accepted)).count() * 2 > measurements.len()
 }
 
 /// The confirmation policy. `Some` only when a second measurement agrees with the candidate,
@@ -1455,6 +1467,7 @@ fn on_cursor_shape(
             plane: None,
             stable_ticks: 0,
             measured_this_position: false,
+            measurements: Vec::new(),
         }
     });
     let (pid, hx, hy) = match &cal {
@@ -1499,10 +1512,18 @@ fn on_cursor_plane(
     let Some(m) = measure_hotspot(&c.ctx, injected, p, (c.width as i32, c.height as i32)) else {
         return;
     };
+    if c.measurements.len() >= CURSOR_CAL_HISTORY {
+        c.measurements.remove(0);
+    }
+    c.measurements.push(m);
     let Some(accepted) = observe_measurement(c, m, seq, epoch) else {
         log::debug!("drm: cursor hotspot for display {display}: measured {m:?} (sample {seq}), waiting for a second one");
         return;
     };
+    if !agrees_with_most(&c.measurements, accepted) {
+        log::debug!("drm: cursor hotspot for display {display}: {accepted:?} is not what most samples measured, not confirming it");
+        return;
+    }
     apply_confirmed_hotspot(c, accepted, display, cursor_epoch);
 }
 
@@ -3065,6 +3086,44 @@ mod drm_capturer_tests {
         assert_eq!(c.current_hot, (12, 12));
         assert_eq!(cached_cursor_cal(shape, CAL_GEN), Some((12, 12)));
         assert_eq!(served(d), (corrected(shape, (12, 12)), 12, 12));
+        forget_cursor_cal(shape, CAL_GEN);
+    }
+
+    // The log of a Hyprland + amdgpu host at scale 1.25: one wire id measured mostly (5,2), with
+    // (12,7), (10,7), (9,17) and (9,7) in between, and master confirmed and cached (9,7) from
+    // the last pair. The pair must agree with most of what the shape measured.
+    #[test]
+    fn a_pair_against_most_measurements_is_not_confirmed() {
+        let _serial = CACHE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let (d, e, shape) = (9_701, next_cursor_epoch(), 0x7a01);
+        forget_cursor_cal(shape, CAL_GEN);
+        let mut cal = arrive(d, e, shape, (3, 5));
+        let mut measure = |m: Hotspot, seq: u64| {
+            let tip = (400 + 10 * seq as i32, 300);
+            settle(&mut cal, (tip.0 - m.0, tip.1 - m.1), Some(peer(tip, seq)), d, e);
+        };
+        for (m, seq) in [
+            ((5, 2), 1),
+            ((12, 7), 2),
+            ((10, 7), 2),
+            ((5, 2), 3),
+            ((5, 3), 3),
+            ((5, 2), 3),
+            ((12, 7), 4),
+            ((9, 17), 5),
+            ((5, 2), 5),
+            ((9, 17), 5),
+            ((5, 2), 6),
+            ((9, 7), 7),
+            ((10, 7), 8),
+        ] {
+            measure(m, seq);
+        }
+        assert_eq!(served(d), (plain(shape), 3, 5), "(9,7) is a minority, the wire stays");
+        assert_eq!(cached_cursor_cal(shape, CAL_GEN), None);
+        measure((5, 2), 9);
+        measure((5, 2), 10);
+        assert_eq!(served(d), (corrected(shape, (5, 2)), 5, 2));
         forget_cursor_cal(shape, CAL_GEN);
     }
 
