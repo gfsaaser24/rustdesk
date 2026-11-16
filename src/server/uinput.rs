@@ -1392,7 +1392,7 @@ mod mouce {
                         absinfo: InputAbsinfo {
                             value: 0,
                             minimum: rng_x.0,
-                            maximum: rng_x.1,
+                            maximum: abs_max(rng_x),
                             fuzz: 0,
                             flat: 0,
                             resolution: 0,
@@ -1408,7 +1408,7 @@ mod mouce {
                         absinfo: InputAbsinfo {
                             value: 0,
                             minimum: rng_y.0,
-                            maximum: rng_y.1,
+                            maximum: abs_max(rng_y),
                             fuzz: 0,
                             flat: 0,
                             resolution: 0,
@@ -1573,6 +1573,13 @@ mod mouce {
         }
     }
 
+    // The desktop rect's end is exclusive (`x + width`), but an evdev `maximum` is the
+    // last valid value: libinput scales by `maximum - minimum + 1`, so passing the end
+    // put every absolute move one pixel up and to the left.
+    fn abs_max((start, end): (i32, i32)) -> i32 {
+        end.saturating_sub(1).max(start)
+    }
+
     impl Drop for UInputMouseManager {
         fn drop(&mut self) {
             let fd = self.uinput_file.as_raw_fd();
@@ -1580,6 +1587,17 @@ mod mouce {
                 // Destroy the device, the file is closed automatically by the File module
                 ioctl(fd, UI_DEV_DESTROY as c_ulong);
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::abs_max;
+
+        #[test]
+        fn abs_range_ends_on_last_pixel() {
+            assert_eq!(abs_max((0, 2560)), 2559);
+            assert_eq!(abs_max((-1920, 2560)), 2559);
         }
     }
 }
